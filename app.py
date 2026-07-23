@@ -70,9 +70,12 @@ with col_iniciar:
         st.session_state.agente_corriendo = True
         try:
             with st.spinner(f"Escaneando {plataforma} desde {ultimo_indice}..."):
+                # Calcular ruta absoluta de forma robusta para evitar errores de CWD en la nube
+                dir_actual = os.path.dirname(os.path.abspath(__file__))
+                ruta_scraper = os.path.join(dir_actual, "agente_scraper.py")
                 # Ejecutamos agente_scraper.py pasándole la plataforma y el índice de inicio
                 proceso = subprocess.run(
-                    [sys.executable, "agente_scraper.py", plataforma.lower(), str(ultimo_indice)],
+                    [sys.executable, ruta_scraper, plataforma.lower(), str(ultimo_indice)],
                     capture_output=True,
                     text=True
                 )

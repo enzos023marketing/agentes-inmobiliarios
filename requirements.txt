@@ -1,6 +1,8 @@
 streamlit
 supabase
 google-generativeai
+google-genai
 requests
 pandas
 beautifulsoup4
+openpyxl
