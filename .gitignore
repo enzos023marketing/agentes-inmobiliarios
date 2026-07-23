@@ -1,0 +1,23 @@
+# Entornos virtuales locales
+venv/
+ENV/
+env/
+.venv/
+
+# Credenciales y configuración sensible
+.env
+
+# Caché de ejecución de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Archivos y cachés locales del proyecto
+*.xlsx
+*.json
+*.txt
+.gemini/
+.agents/
+.idea/
+.vscode/
