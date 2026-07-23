@@ -17,6 +17,7 @@ import db_client
 # 1. Configuración de la página
 st.set_page_config(
     page_title="IA INMOBILIARIA - TERMINAL DE OPERACIONES",
+    page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
