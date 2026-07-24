@@ -82,11 +82,26 @@ def main():
     # 1. Argumentos CLI y Consulta de Paginación en Supabase
     plataforma = sys.argv[1].lower().strip() if len(sys.argv) > 1 else "instagram"
     
-    # Lectura del índice inicial de paginación desde Supabase
-    indice_inicial = db_client.obtener_ultimo_indice(plataforma)
+    # Lectura del índice inicial de paginación desde sys.argv o Supabase
+    if len(sys.argv) > 2:
+        try:
+            indice_inicial = int(sys.argv[2])
+        except ValueError:
+            indice_inicial = db_client.obtener_ultimo_indice(plataforma)
+    else:
+        indice_inicial = db_client.obtener_ultimo_indice(plataforma)
+
+    # Cantidad de páginas a escanear
+    paginas_a_escanear = 1
+    if len(sys.argv) > 3:
+        try:
+            paginas_a_escanear = int(sys.argv[3])
+        except ValueError:
+            pass
 
     print(f"[CONFIG] Plataforma activa para escaneo: {plataforma.upper()}")
-    print(f"[CONFIG] Índice inicial cargado de Supabase: {indice_inicial}")
+    print(f"[CONFIG] Índice de inicio: {indice_inicial}")
+    print(f"[CONFIG] Páginas a escanear: {paginas_a_escanear}")
 
     # 2. Inicializar cliente de Google GenAI
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
@@ -108,91 +123,117 @@ def main():
             f'site:{plataforma}.com "dueño directo" "mar del plata" -alquiler -alquilo'
         ]
 
-    # Búsqueda acotada: Se avanzan 10 índices (1 página de Google) por dork por ejecución
-    limite_de_bloque = 10
-    nuevo_indice = indice_inicial + limite_de_bloque
+    # Búsqueda acotada: Se avanzan de 10 en 10
+    limite_de_bloque = paginas_a_escanear * 10
     
     print(f"\n[EXEC] Iniciando escaneo de bloques en Google Search...")
     print(f"[EXEC] Buscando para {plataforma.upper()} con índice de inicio: {indice_inicial}")
+    print(f"[EXEC] Páginas a escanear: {paginas_a_escanear} (Bloque total de {limite_de_bloque} resultados)")
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
 
     anuncios_candidatos = []
+    paginas_exitosas = 0
+    bloqueado = False
 
     # 4. Motor de peticiones HTTP limpias
-    for dork in dorks:
-        url = f"https://www.google.com/search?q={urllib.parse.quote_plus(dork)}&start={indice_inicial}"
-        print(f"\n[HTTP] Consultando query: {url}")
+    for p in range(paginas_a_escanear):
+        start_val = indice_inicial + (p * 10)
+        print(f"\n[PAGE] Iniciando escaneo de página {p + 1}/{paginas_a_escanear} (start={start_val})...")
         
-        try:
-            response = requests.get(url, headers=headers, timeout=15)
+        pagina_completa_con_exito = True
+        for dork_idx, dork in enumerate(dorks):
+            # Calcular y reportar progreso global
+            query_num = p * len(dorks) + dork_idx + 1
+            total_queries = paginas_a_escanear * len(dorks)
+            progreso_porcentaje = int((query_num / total_queries) * 100)
+            print(f"[PROGRESS_PCT] {progreso_porcentaje}%")
             
-            # Control de bloqueo/consensos de Google
-            if response.status_code == 429 or "detected unusual traffic" in response.text:
-                print(f"[HTTP] [WARN] Bloqueo temporal o Captcha detectado por Google (Código {response.status_code}).")
-                continue
+            url = f"https://www.google.com/search?q={urllib.parse.quote_plus(dork)}&start={start_val}"
+            print(f"\n[HTTP] Consultando query ({query_num}/{total_queries}): {url}")
             
-            if response.status_code != 200:
-                print(f"[HTTP] [WARN] Estado de respuesta no exitoso: {response.status_code}")
-                continue
+            try:
+                response = requests.get(url, headers=headers, timeout=15)
                 
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Extraer enlaces candidatos de la plataforma específica
-            for a in soup.find_all('a', href=True):
-                link = a['href']
+                # Control de bloqueo/consensos de Google
+                if response.status_code == 429 or "detected unusual traffic" in response.text:
+                    print(f"[HTTP] [WARN] Bloqueo temporal o Captcha detectado por Google (Código {response.status_code}).")
+                    bloqueado = True
+                    pagina_completa_con_exito = False
+                    break
                 
-                # Desempaquetar redirecciones de Google si existen
-                if '/url?q=' in link:
-                    link = link.split('/url?q=')[1].split('&')[0]
-                
-                link = urllib.parse.unquote(link)
-                
-                # Descartar links internos de Google o inválidos
-                if not link.startswith('https://') or 'google.com' in link:
+                if response.status_code != 200:
+                    print(f"[HTTP] [WARN] Estado de respuesta no exitoso: {response.status_code}")
+                    pagina_completa_con_exito = False
                     continue
-                
-                # Filtrar rigurosamente que pertenezcan a la plataforma activa
-                if plataforma == "instagram" and "instagram.com" not in link:
-                    continue
-                if plataforma == "facebook" and "facebook.com" not in link:
-                    continue
-                
-                # Extraer título del resultado de búsqueda
-                h3 = a.find('h3')
-                titulo = h3.get_text(strip=True) if h3 else ""
-                
-                # Obtener fragmento de texto adyacente (snippet) subiendo en el DOM
-                snippet = ""
-                parent = a.parent
-                for _ in range(4):
-                    if not parent:
-                        break
-                    text = parent.get_text(" ", strip=True)
-                    if len(text) > len(titulo) + 30:
-                        snippet = text
-                        break
-                    parent = parent.parent
-                
-                if not titulo:
-                    titulo = snippet[:60] + "..." if snippet else f"Publicación de {plataforma.capitalize()}"
-                
-                # Control de duplicados en la lista de la tanda actual
-                if link not in [an['link'] for an in anuncios_candidatos]:
-                    anuncios_candidatos.append({
-                        'titulo': titulo,
-                        'link': link,
-                        'texto': snippet or titulo
-                    })
                     
-        except Exception as e:
-            print(f"[HTTP] [ERROR] Error al escanear la query: {e}")
-        
-        # Pausa anti-bloqueo entre consultas de dorks
-        espera_humana(4.0, 7.0)
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Extraer enlaces candidatos de la plataforma específica
+                for a in soup.find_all('a', href=True):
+                    link = a['href']
+                    
+                    # Desempaquetar redirecciones de Google si existen
+                    if '/url?q=' in link:
+                        link = link.split('/url?q=')[1].split('&')[0]
+                    
+                    link = urllib.parse.unquote(link)
+                    
+                    # Descartar links internos de Google o inválidos
+                    if not link.startswith('https://') or 'google.com' in link:
+                        continue
+                    
+                    # Filtrar rigurosamente que pertenezcan a la plataforma activa
+                    if plataforma == "instagram" and "instagram.com" not in link:
+                        continue
+                    if plataforma == "facebook" and "facebook.com" not in link:
+                        continue
+                    
+                    # Extraer título del resultado de búsqueda
+                    h3 = a.find('h3')
+                    titulo = h3.get_text(strip=True) if h3 else ""
+                    
+                    # Obtener fragmento de texto adyacente (snippet) subiendo en el DOM
+                    snippet = ""
+                    parent = a.parent
+                    for _ in range(4):
+                        if not parent:
+                            break
+                        text = parent.get_text(" ", strip=True)
+                        if len(text) > len(titulo) + 30:
+                            snippet = text
+                            break
+                        parent = parent.parent
+                    
+                    if not titulo:
+                        titulo = snippet[:60] + "..." if snippet else f"Publicación de {plataforma.capitalize()}"
+                    
+                    # Control de duplicados en la lista de la tanda actual
+                    if link not in [an['link'] for an in anuncios_candidatos]:
+                        anuncios_candidatos.append({
+                            'titulo': titulo,
+                            'link': link,
+                            'texto': snippet or titulo
+                        })
+                        
+            except Exception as e:
+                print(f"[HTTP] [ERROR] Error al escanear la query: {e}")
+                pagina_completa_con_exito = False
+            
+            # Pausa anti-bloqueo entre consultas de dorks
+            if query_num < total_queries and not bloqueado:
+                espera_humana(4.0, 7.0)
+                
+        if bloqueado:
+            print("[WARN] Deteniendo escaneo general por bloqueos de Google.")
+            break
+            
+        if pagina_completa_con_exito:
+            paginas_exitosas += 1
 
+    nuevo_indice = indice_inicial + (paginas_exitosas * 10)
     print(f"\n[SYS] Encontrados {len(anuncios_candidatos)} candidatos brutos para {plataforma.upper()}.")
 
     nuevos_registros_guardados = 0
@@ -281,12 +322,19 @@ def main():
         espera_humana(2.0, 4.0)
 
     # 6. Actualización del puntero de paginación en Supabase
-    db_client.actualizar_indice(plataforma, nuevo_indice)
-    print(f"\n=====================================================")
-    print(f"✅ CICLO ACUTADO FINALIZADO exitosamente.")
-    print(f"📊 Nuevas captaciones agregadas: {nuevos_registros_guardados}")
-    print(f"🔑 Paginación actualizada en Supabase para {plataforma.upper()}: {nuevo_indice}")
-    print("=====================================================")
+    if paginas_exitosas > 0:
+        db_client.actualizar_indice(plataforma, nuevo_indice)
+        print(f"\n=====================================================")
+        print(f"✅ CICLO ACUTADO FINALIZADO exitosamente.")
+        print(f"📊 Nuevas captaciones agregadas: {nuevos_registros_guardados}")
+        print(f"🔑 Paginación actualizada en Supabase para {plataforma.upper()}: {nuevo_indice}")
+        print("=====================================================")
+    else:
+        print(f"\n=====================================================")
+        print(f"⚠️ CICLO COMPLETADO SIN AVANCES EN EL ÍNDICE.")
+        print(f"📊 Nuevas captaciones agregadas: {nuevos_registros_guardados}")
+        print(f"🔑 El índice se mantiene en: {indice_inicial}")
+        print("=====================================================")
 
 if __name__ == "__main__":
     main()

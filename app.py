@@ -4,6 +4,8 @@ import time
 import os
 import subprocess
 import sys
+import queue
+import threading
 
 # Intentar cargar variables de entorno locales desde archivo .env
 try:
@@ -28,8 +30,20 @@ st.set_page_config(
 if "agente_corriendo" not in st.session_state:
     st.session_state.agente_corriendo = False
 
-if "entorno_iniciado" not in st.session_state:
-    st.session_state.entorno_iniciado = False
+if "proceso" not in st.session_state:
+    st.session_state.proceso = None
+
+if "logs" not in st.session_state:
+    st.session_state.logs = []
+
+if "progreso_pct" not in st.session_state:
+    st.session_state.progreso_pct = 0
+
+if "stdout_queue" not in st.session_state:
+    st.session_state.stdout_queue = None
+
+if "thread" not in st.session_state:
+    st.session_state.thread = None
 
 # Verificación de credenciales Supabase
 supabase_url = os.environ.get("SUPABASE_URL", "")
@@ -61,6 +75,26 @@ else:
 
 st.sidebar.divider()
 
+# Nuevos controles para el control del escaneo
+indice_personalizado = st.sidebar.number_input(
+    "Índice de inicio:",
+    min_value=0,
+    value=int(ultimo_indice),
+    step=10,
+    help="Índice de inicio para la consulta a Google Search. Precargado con el último guardado."
+)
+
+paginas_escanear = st.sidebar.slider(
+    "Páginas a escanear (1 pág = 10 resultados):",
+    min_value=1,
+    max_value=5,
+    value=1,
+    step=1,
+    help="Cantidad de páginas de resultados de Google a escanear en esta ejecución."
+)
+
+st.sidebar.divider()
+
 # Botones de ejecución
 col_iniciar, col_detener = st.sidebar.columns(2)
 
@@ -69,37 +103,73 @@ with col_iniciar:
     if st.button("RUN INDEX", use_container_width=True, disabled=boton_deshabilitado):
         st.sidebar.info("⚡ INICIALIZANDO...")
         st.session_state.agente_corriendo = True
+        st.session_state.logs = ["[SYS]: Iniciando agente scraper..."]
+        st.session_state.progreso_pct = 0
+        
         try:
-            with st.spinner(f"Escaneando {plataforma} desde {ultimo_indice}..."):
-                # Calcular ruta absoluta de forma robusta para evitar errores de CWD en la nube
-                dir_actual = os.path.dirname(os.path.abspath(__file__))
-                ruta_scraper = os.path.join(dir_actual, "agente_scraper.py")
-                # Ejecutamos agente_scraper.py pasándole la plataforma y el índice de inicio
-                proceso = subprocess.run(
-                    [sys.executable, ruta_scraper, plataforma.lower(), str(ultimo_indice)],
-                    capture_output=True,
-                    text=True
-                )
+            # Calcular ruta absoluta de forma robusta
+            dir_actual = os.path.dirname(os.path.abspath(__file__))
+            ruta_scraper = os.path.join(dir_actual, "agente_scraper.py")
             
-            st.session_state.agente_corriendo = False
-            if proceso.returncode == 0:
-                st.sidebar.success("✅ COMAND FINISHED")
-                time.sleep(1)
+            # Ejecutamos agente_scraper.py pasándole la plataforma, el índice inicial y las páginas
+            proceso = subprocess.Popen(
+                [sys.executable, ruta_scraper, plataforma.lower(), str(indice_personalizado), str(paginas_escanear)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+            
+            st.session_state.proceso = proceso
+            
+            # Cola para lectura asíncrona de stdout
+            q = queue.Queue()
+            st.session_state.stdout_queue = q
+            
+            def leer_salida(stream, col_q):
+                try:
+                    for linea in iter(stream.readline, ''):
+                        col_q.put(linea)
+                except Exception:
+                    pass
+                finally:
+                    stream.close()
+                    
+            t = threading.Thread(target=leer_salida, args=(proceso.stdout, q))
+            t.daemon = True
+            t.start()
+            st.session_state.thread = t
+            
+            try:
                 st.rerun()
-            else:
-                st.sidebar.error("❌ PROCESS CRASHED")
-                with st.expander("Ver log de diagnóstico"):
-                    st.code(proceso.stderr or proceso.stdout)
-                st.session_state.estado = "ESPERANDO"
+            except AttributeError:
+                st.experimental_rerun()
                 
         except Exception as e:
             st.session_state.agente_corriendo = False
-            st.sidebar.error(f"Error: {e}")
-            st.session_state.estado = "ESPERANDO"
+            st.sidebar.error(f"Error al iniciar: {e}")
 
 with col_detener:
-    if st.button("STOP", use_container_width=True, disabled=True):
-        pass
+    boton_detener_deshabilitado = not st.session_state.agente_corriendo or st.session_state.proceso is None
+    if st.button("STOP", use_container_width=True, disabled=boton_detener_deshabilitado):
+        if st.session_state.proceso:
+            try:
+                st.session_state.proceso.terminate()
+                st.session_state.proceso.wait(timeout=3)
+            except Exception:
+                try:
+                    st.session_state.proceso.kill()
+                except Exception:
+                    pass
+        st.session_state.agente_corriendo = False
+        st.session_state.logs.append("[SYS_STOP]: Ejecución cancelada por el usuario.")
+        st.session_state.proceso = None
+        st.session_state.thread = None
+        st.session_state.stdout_queue = None
+        try:
+            st.rerun()
+        except AttributeError:
+            st.experimental_rerun()
 
 # Indicador visual del estado del sistema
 if st.session_state.agente_corriendo:
@@ -161,17 +231,91 @@ else:
 
 # 5. Consola de Registro de Operaciones (Logs)
 st.subheader("Logs de Operación del Sistema")
-log_container = st.empty()
 
 if st.session_state.agente_corriendo:
-    if not st.session_state.entorno_iniciado:
-        with log_container.container():
-            st.info("[SYS]: Paginando base de datos cloud...\n[SYS]: Inicializando motor HTTP y disparando dorks para la plataforma activa...")
+    # 1. Leer todas las líneas de la cola
+    q = st.session_state.get("stdout_queue")
+    proceso = st.session_state.get("proceso")
+    
+    if q and proceso:
+        lineas_nuevas = []
+        while True:
+            try:
+                linea = q.get_nowait()
+                lineas_nuevas.append(linea)
+            except queue.Empty:
+                break
+                
+        # 2. Procesar líneas nuevas
+        for linea in lineas_nuevas:
+            linea_clean = linea.strip()
+            if linea_clean:
+                # Comprobar si reporta porcentaje de progreso
+                if linea_clean.startswith("[PROGRESS_PCT]"):
+                    try:
+                        pct = int(linea_clean.replace("[PROGRESS_PCT]", "").replace("%", "").strip())
+                        st.session_state.progreso_pct = pct
+                    except ValueError:
+                        pass
+                else:
+                    st.session_state.logs.append(linea_clean)
+                    
+        # 3. Mostrar UI de progreso
+        col_pct, col_desc = st.columns([1, 4])
+        with col_pct:
+            st.metric("Progreso", f"{st.session_state.progreso_pct}%")
+        with col_desc:
+            st.progress(st.session_state.progreso_pct / 100.0)
+            
+        st.success(f"[SYS_ACTIVE]: Agente ejecutando búsqueda acotada de {plataforma.upper()} desde índice {indice_personalizado} ({paginas_escanear} pág/s).")
+        
+        # Mostrar logs en la consola
+        st.code("\n".join(st.session_state.logs[-25:]), language="text")
+        
+        # 4. Verificar si terminó
+        retorno = proceso.poll()
+        if retorno is not None:
+            # Leer cualquier línea restante de la cola
+            while True:
+                try:
+                    linea = q.get_nowait()
+                    linea_clean = linea.strip()
+                    if linea_clean and not linea_clean.startswith("[PROGRESS_PCT]"):
+                        st.session_state.logs.append(linea_clean)
+                except queue.Empty:
+                    break
+            
+            # Terminar y limpiar estado
+            st.session_state.agente_corriendo = False
+            st.session_state.proceso = None
+            st.session_state.thread = None
+            st.session_state.stdout_queue = None
+            
+            if retorno == 0:
+                st.toast("✅ Ejecución finalizada con éxito", icon="✅")
+                st.session_state.logs.append("[SYS_FINISHED]: Proceso completado exitosamente.")
+            else:
+                st.toast("❌ El proceso falló o fue cancelado", icon="❌")
+                st.session_state.logs.append(f"[SYS_ERROR]: El proceso terminó con código de error {retorno}.")
+            
             time.sleep(1)
-            st.session_state.entorno_iniciado = True
-            st.rerun()
+            try:
+                st.rerun()
+            except AttributeError:
+                st.experimental_rerun()
+        else:
+            # Si sigue corriendo, dormir 0.5 segundos y relanzar rerun para refrescar
+            time.sleep(0.5)
+            try:
+                st.rerun()
+            except AttributeError:
+                st.experimental_rerun()
     else:
-        with log_container.container():
-            st.success(f"[SYS_ACTIVE]: Agente ejecutando búsqueda acotada de {plataforma.upper()}. Leyendo y escribiendo en la nube.")
+        # Fallback en caso de que esté en estado inconsistente
+        st.session_state.agente_corriendo = False
+        try:
+            st.rerun()
+        except AttributeError:
+            st.experimental_rerun()
 else:
-    log_container.info("[SYS_CONSOLE]: Esperando señal. Inicia la secuencia RUN INDEX desde el panel de control.")
+    st.info("[SYS_CONSOLE]: Esperando señal. Inicia la secuencia RUN INDEX desde el panel de control.")
