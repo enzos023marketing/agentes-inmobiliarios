@@ -6,51 +6,267 @@ import requests
 import json
 import hashlib
 import urllib.parse
+import re
 from datetime import datetime, timezone
 from bs4 import BeautifulSoup
-from google import genai
 import db_client
 
+# Cargar variables de entorno explícitamente al inicio
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
+# Importar validadores
+try:
+    from notificador_telegram import validar_conexion_telegram
+except ImportError:
+    def validar_conexion_telegram():
+        return False
+
 def espera_humana(min_seg=2.0, max_seg=5.0):
-    """Simula los tiempos de reacción de un humano para evitar bloqueos de Google."""
+    """Simula los tiempos de reacción de un humano para evitar bloqueos."""
     time.sleep(random.uniform(min_seg, max_seg))
 
-def consultar_gemini_con_reintentos(client, prompt_text, max_intentos=3):
-    """Realiza la consulta a la API de Gemini con lógica de reintentos."""
-    for intento in range(max_intentos):
+def clasificar_publicacion_local(titulo: str, texto: str, link: str) -> dict:
+    """
+    Clasifica de forma 100% local y gratuita (sin IA externa) si la publicación
+    se refiere a una venta de propiedad en Mar del Plata, y si es dueño directo.
+    """
+    text_to_check = f"{titulo} {texto}".lower()
+    
+    # 1. Palabras clave de Mar del Plata / Costa Atlántica
+    mdp_keywords = ["mar del plata", "mdp", "punta mogotes", "luro", "chauvin", "playa grande", "stella maris", "constitucion", "parque luro", "la perla", "costa atlantica", "costa atlántica"]
+    has_mdp = any(kw in text_to_check for kw in mdp_keywords) or "mar del plata" in link.lower()
+    
+    # 2. Palabras clave de Propiedades
+    prop_keywords = ["casa", "depto", "departamento", "duplex", "dúplex", "lote", "terreno", "cochera", "ph", "monoambiente", "ambiente", "ambientes", "propiedad", "inmueble"]
+    has_property = any(pw in text_to_check for pw in prop_keywords)
+    
+    # 3. Palabras clave de Ventas/Oportunidades
+    sale_keywords = ["vende", "vendo", "venta", "compro", "oportunidad", "u$d", "usd", "dolares", "dólares", "pesos", "valor", "precio"]
+    has_sale = any(sw in text_to_check for sw in sale_keywords)
+    
+    # 4. Palabras clave de Dueño Directo / Particular
+    owner_keywords = ["dueño", "dueno", "directo", "particular", "propietario", "sin comision", "sin comisión"]
+    is_owner = any(okw in text_to_check for okw in owner_keywords)
+    
+    # 5. Palabras clave de Inmobiliarias / Brokers
+    broker_keywords = ["inmobiliaria", "propiedades", "remax", "re/max", "broker", "bienes raices", "gestion inmobiliaria"]
+    is_broker = any(bkw in text_to_check for bkw in broker_keywords)
+    
+    # 6. Alquileres tradicionales (para descartar si no son ventas)
+    rent_keywords = ["alquiler", "alquilo", "alquileres", "temporario", "mensual"]
+    is_rent = any(rkw in text_to_check for rkw in rent_keywords) and not ("vendo" in text_to_check or "venta" in text_to_check)
+
+    # Determinar si cumple
+    cumple = False
+    if (has_property or is_owner or has_mdp) and not is_rent:
+        # Excluir vehículos a menos que explícitamente mencione propiedades
+        if not ("auto" in text_to_check or "moto" in text_to_check or "camioneta" in text_to_check) or has_property:
+            cumple = True
+            
+    # Extraer teléfono con Expresión Regular
+    # Patrones comunes de teléfonos de Argentina
+    telefono = "A revisar"
+    # Buscar patrones que parezcan teléfonos
+    phones = re.findall(r'(?:\+?54[\s-]?)?\(?\d{2,4}\)?[\s-]?\d{3,4}[\s-]?\d{3,4}', text_to_check)
+    valid_phones = []
+    for ph in phones:
+        digits = re.sub(r'\D', '', ph)
+        if 8 <= len(digits) <= 13:
+            # Descartar años comunes
+            if not digits.startswith(('202', '203')):
+                valid_phones.append(ph.strip())
+    if valid_phones:
+        telefono = valid_phones[0]
+        
+    # Clasificar el tipo de contacto
+    contacto = "Dueño Directo" if is_owner else ("Inmobiliaria / Captación" if is_broker else "Contacto Directo")
+    
+    # Determinar el tipo de propiedad
+    tipo_prop = "Propiedad"
+    if "casa" in text_to_check:
+        tipo_prop = "Casa"
+    elif "depto" in text_to_check or "departamento" in text_to_check:
+        tipo_prop = "Departamento"
+    elif "duplex" in text_to_check or "dúplex" in text_to_check:
+        tipo_prop = "Duplex"
+    elif "terreno" in text_to_check or "lote" in text_to_check:
+        tipo_prop = "Terreno"
+
+    # Detalles del análisis
+    detalles = []
+    if is_owner:
+        detalles.append("Particular/Dueño Directo")
+    if is_broker:
+        detalles.append("Inmobiliaria/Broker")
+    if has_property:
+        detalles.append("Inmueble identificado")
+    if has_mdp:
+        detalles.append("Zona Mar del Plata")
+        
+    analisis = f"Filtro Heurístico Local: {', '.join(detalles) if detalles else 'Propiedad detectada'}. Teléfono: {telefono}."
+
+    return {
+        "Cumple": cumple,
+        "Tipo Propiedad": tipo_prop,
+        "Teléfono": telefono,
+        "Dueño/Contacto": contacto,
+        "Análisis IA": analisis
+    }
+
+def extraer_candidatos_generico(html_text, plataforma):
+    """
+    Parsea de forma genérica el HTML buscando enlaces limpios de la plataforma
+    especificada, junto con títulos y fragmentos de texto adyacentes.
+    """
+    soup = BeautifulSoup(html_text, 'html.parser')
+    candidatos = []
+    
+    for a in soup.find_all('a', href=True):
+        raw_link = a['href']
+        
+        # Desempaquetar si viene de redirección de Google
+        if '/url?q=' in raw_link:
+            try:
+                raw_link = raw_link.split('/url?q=')[1].split('&')[0]
+            except Exception:
+                pass
+                
+        # Desempaquetar si viene de redirección de DuckDuckGo
+        if 'uddg=' in raw_link:
+            try:
+                raw_link = raw_link.split('uddg=')[1].split('&')[0]
+            except Exception:
+                pass
+                
+        link = urllib.parse.unquote(raw_link)
+        
+        if not link.startswith('https://') or 'google.com' in link or 'duckduckgo.com' in link:
+            continue
+            
+        # Filtrar por plataforma
+        if plataforma == "instagram" and "instagram.com" not in link:
+            continue
+        if plataforma == "facebook" and "facebook.com" not in link:
+            continue
+            
+        # Limpieza de URL (eliminar query parameters como ?igsh=...)
         try:
-            print(f"[IA] Analizando oportunidad con Gemini (Intento {intento + 1}/{max_intentos})...")
-            respuesta = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt_text,
-            )
-            return respuesta.text
-        except Exception as e:
-            print(f"[WARN] Servidores de IA saturados o error: {e}")
-            if intento < max_intentos - 1:
-                espera_humana(6.0, 12.0)
+            parsed_url = urllib.parse.urlparse(link)
+            clean_link = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
+            # Remover barra final si existe para consistencia
+            if clean_link.endswith('/'):
+                clean_link = clean_link[:-1]
+                
+            # Evitar capturar sólo la página de inicio
+            if parsed_url.path == "/" or not parsed_url.path:
+                continue
+        except Exception:
+            continue
+            
+        # Extraer título y snippet
+        titulo = a.get_text(strip=True)
+        h3 = a.find('h3')
+        if h3:
+            titulo = h3.get_text(strip=True)
+            
+        snippet = ""
+        parent = a.parent
+        for _ in range(4):
+            if not parent:
+                break
+            text = parent.get_text(" ", strip=True)
+            if len(text) > len(titulo) + 20:
+                snippet = text
+                break
+            parent = parent.parent
+            
+        if not titulo or len(titulo) < 5:
+            titulo = snippet[:60] + "..." if len(snippet) > 10 else f"Publicación de {plataforma.capitalize()}"
+            
+        if clean_link not in [c['link'] for c in candidatos]:
+            candidatos.append({
+                'titulo': titulo.strip(),
+                'link': clean_link,
+                'texto': snippet.strip() or titulo.strip()
+            })
+            
+    return candidatos
+
+def realizar_busqueda(query, plataforma, start_val=0):
+    """
+    Realiza una búsqueda HTTP en Google Search y, si se detecta un bloqueo o
+    no hay resultados, recurre a DuckDuckGo HTML Search de forma gratuita.
+    """
+    headers_list = [
+        {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
+        {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"},
+        {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"},
+        {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+    ]
+    headers = random.choice(headers_list)
+    
+    # 1. Intentar con Google
+    google_url = f"https://www.google.com/search?q={urllib.parse.quote_plus(query)}&start={start_val}"
+    print(f"[HTTP] Buscando en Google: {google_url}")
+    try:
+        response = requests.get(google_url, headers=headers, timeout=15)
+        if response.status_code == 200 and "detected unusual traffic" not in response.text:
+            candidatos = extraer_candidatos_generico(response.text, plataforma)
+            if candidatos:
+                print(f"[HTTP] Google retornó {len(candidatos)} candidatos.")
+                return candidatos
             else:
-                return "[ERROR]"
+                print("[HTTP] Google no arrojó candidatos en el HTML.")
+        else:
+            print(f"[HTTP] Google bloqueado (código {response.status_code}) o captcha detectado.")
+    except Exception as e:
+        print(f"[HTTP] Error consultando Google: {e}")
+        
+    # Espera corta antes de fallback
+    time.sleep(1)
+    
+    # 2. Fallback a DuckDuckGo HTML Search (Cero costo y alta tolerancia a scrapers)
+    ddg_url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote_plus(query)}"
+    print(f"[HTTP] [FALLBACK] Buscando en DuckDuckGo: {ddg_url}")
+    try:
+        response = requests.get(ddg_url, headers=headers, timeout=15)
+        if response.status_code == 200:
+            candidatos = extraer_candidatos_generico(response.text, plataforma)
+            print(f"[HTTP] DuckDuckGo retornó {len(candidatos)} candidatos.")
+            return candidatos
+        else:
+            print(f"[HTTP] DuckDuckGo falló con código {response.status_code}.")
+    except Exception as e:
+        print(f"[HTTP] Error consultando DuckDuckGo: {e}")
+        
+    return []
 
 def enviar_a_telegram(prop):
-    """Envía notificaciones de captación directa a un chat de Telegram."""
-    # Configuración de Telegram (se lee de variables de entorno)
-    TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+    """Envía alertas del inmueble captado por Telegram."""
+    TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     
+    if not TOKEN or not CHAT_ID:
+        print("[TELEGRAM] Omitiendo notificación: Credenciales ausentes en el .env.")
+        return
+        
     url_telegram = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     tipo = prop.get("Tipo Propiedad", "Propiedad")
-    analisis = prop.get("Análisis IA", "Sin análisis")
+    analisis = prop.get("Análisis IA", "Sin detalles")
     link = prop.get("Link", "")
     telefono = prop.get("Teléfono", "A revisar")
     contacto = prop.get("Dueño/Contacto", "Dueño Directo")
     
     mensaje = (
-        f"🏢 *NUEVA CAPTACIÓN DIRECTA ({prop.get('Plataforma', 'Redes').upper()})*\n\n"
+        f"🏢 *NUEVA CAPTACIÓN GRATUITA ({prop.get('Plataforma', 'Redes').upper()})*\n\n"
         f"📍 *Tipo:* {tipo}\n"
         f"👤 *Contacto:* {contacto}\n"
         f"📞 *Teléfono:* {telefono}\n"
-        f"💡 *IA:* {analisis}\n\n"
+        f"💡 *Detalles:* {analisis}\n\n"
         f"🔗 [Abrir Publicación]({link})"
     )
     payload = {
@@ -64,25 +280,36 @@ def enviar_a_telegram(prop):
         if r.status_code == 200:
             print(f"[TELEGRAM] ✅ Notificación enviada correctamente.")
         else:
-            print(f"[TELEGRAM] ❌ Falló envío. Código de estado: {r.status_code}")
+            print(f"[TELEGRAM] ❌ Falló envío (Código {r.status_code}): {r.text}")
     except Exception as e:
         print(f"[TELEGRAM] [ERROR] Falló enlace con Telegram: {e}")
 
 def main():
-    # Asegurar codificación UTF-8 en salida estándar
+    # Asegurar codificación UTF-8
     try:
         sys.stdout.reconfigure(encoding='utf-8')
     except Exception:
         pass
 
     print("=====================================================")
-    print("🤖 INICIANDO AGENTE FANTASMA MODULAR Y CLOUD-READY 🤖")
+    print("🤖 INICIANDO AGENTE SCRAPER AUTOMÁTICO - COSTO CERO 🤖")
     print("=====================================================\n")
 
-    # 1. Argumentos CLI y Consulta de Paginación en Supabase
+    # 1. Verificación de conexiones de servicios
+    print("[INIT] Verificando conexiones de servicios...")
+    if db_client.validar_conexion_supabase():
+        print("[INIT] ✅ Supabase: CONECTADO")
+    else:
+        print("[INIT] ❌ Supabase: DESCONECTADO (revisar credenciales)")
+        
+    if validar_conexion_telegram():
+        print("[INIT] ✅ Telegram: BOT ACTIVO")
+    else:
+        print("[INIT] ⚠️ Telegram: DESCONECTADO o TOKEN INVÁLIDO")
+
+    # 2. Argumentos de entrada
     plataforma = sys.argv[1].lower().strip() if len(sys.argv) > 1 else "instagram"
     
-    # Lectura del índice inicial de paginación desde sys.argv o Supabase
     if len(sys.argv) > 2:
         try:
             indice_inicial = int(sys.argv[2])
@@ -91,7 +318,6 @@ def main():
     else:
         indice_inicial = db_client.obtener_ultimo_indice(plataforma)
 
-    # Cantidad de páginas a escanear
     paginas_a_escanear = 1
     if len(sys.argv) > 3:
         try:
@@ -99,242 +325,113 @@ def main():
         except ValueError:
             pass
 
-    print(f"[CONFIG] Plataforma activa para escaneo: {plataforma.upper()}")
-    print(f"[CONFIG] Índice de inicio: {indice_inicial}")
+    print(f"\n[CONFIG] Plataforma: {plataforma.upper()}")
+    print(f"[CONFIG] Índice inicial: {indice_inicial}")
     print(f"[CONFIG] Páginas a escanear: {paginas_a_escanear}")
 
-    # 2. Inicializar cliente de Google GenAI
-    gemini_key = os.environ.get("GEMINI_API_KEY", "")
-    client = genai.Client(api_key=gemini_key)
-
-    # 3. Definir Dorks de búsqueda con filtros anti-autos, anti-alquileres y anti-inmobiliarias
+    # 3. Armado de queries
     if plataforma == "instagram":
-        dorks = [
-            'site:instagram.com "dueño vende" "mar del plata" (departamento OR casa OR depto OR dto) -inmobiliaria -alquiler -alquilo -alquileres -auto -moto -camioneta',
-            'site:instagram.com "dueño directo" "mar del plata" (departamento OR casa OR depto OR dto) -inmobiliaria -alquiler -alquilo -auto -moto'
+        queries = [
+            'site:instagram.com "dueño vende" "mar del plata"',
+            'site:instagram.com "dueño directo" "mar del plata"',
+            'site:instagram.com "inmobiliarias mar del plata"',
+            'site:instagram.com "captaciones costa atlántica"'
         ]
     elif plataforma == "facebook":
-        dorks = [
-            'site:facebook.com/marketplace "dueño vende" "mar del plata" (casa OR departamento OR depto) -alquiler -alquilo -auto -camioneta -vehiculo -moto',
-            'site:facebook.com "dueño directo" "mar del plata" (venta OR vendo OR vende) -inmobiliaria -alquiler -alquilo -auto -camioneta'
+        queries = [
+            'site:facebook.com "dueño vende" "mar del plata"',
+            'site:facebook.com "dueño directo" "mar del plata"',
+            'site:facebook.com "inmobiliarias mar del plata"',
+            'site:facebook.com "captaciones costa atlántica"'
         ]
     else:
-        dorks = [
-            f'site:{plataforma}.com "dueño directo" "mar del plata" -alquiler -alquilo'
+        queries = [
+            f'site:{plataforma}.com "dueño directo" "mar del plata"',
+            f'site:{plataforma}.com "inmobiliarias mar del plata"'
         ]
-
-    # Búsqueda acotada: Se avanzan de 10 en 10
-    limite_de_bloque = paginas_a_escanear * 10
-    
-    print(f"\n[EXEC] Iniciando escaneo de bloques en Google Search...")
-    print(f"[EXEC] Buscando para {plataforma.upper()} con índice de inicio: {indice_inicial}")
-    print(f"[EXEC] Páginas a escanear: {paginas_a_escanear} (Bloque total de {limite_de_bloque} resultados)")
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
 
     anuncios_candidatos = []
     paginas_exitosas = 0
-    bloqueado = False
 
-    # 4. Motor de peticiones HTTP limpias
+    # 4. Escaneo
     for p in range(paginas_a_escanear):
         start_val = indice_inicial + (p * 10)
-        print(f"\n[PAGE] Iniciando escaneo de página {p + 1}/{paginas_a_escanear} (start={start_val})...")
+        print(f"\n[PAGE] Escaneando página {p + 1}/{paginas_a_escanear} (start={start_val})...")
         
-        pagina_completa_con_exito = True
-        for dork_idx, dork in enumerate(dorks):
-            # Calcular y reportar progreso global
-            query_num = p * len(dorks) + dork_idx + 1
-            total_queries = paginas_a_escanear * len(dorks)
+        pagina_ok = True
+        for query_idx, query in enumerate(queries):
+            # Reportar progreso
+            query_num = p * len(queries) + query_idx + 1
+            total_queries = paginas_a_escanear * len(queries)
             progreso_porcentaje = int((query_num / total_queries) * 100)
             print(f"[PROGRESS_PCT] {progreso_porcentaje}%")
             
-            url = f"https://www.google.com/search?q={urllib.parse.quote_plus(dork)}&start={start_val}"
-            print(f"\n[HTTP] Consultando query ({query_num}/{total_queries}): {url}")
+            candidatos_tanda = realizar_busqueda(query, plataforma, start_val)
             
-            try:
-                response = requests.get(url, headers=headers, timeout=15)
-                
-                # Control de bloqueo/consensos de Google
-                if response.status_code == 429 or "detected unusual traffic" in response.text:
-                    print(f"[HTTP] [WARN] Bloqueo temporal o Captcha detectado por Google (Código {response.status_code}).")
-                    bloqueado = True
-                    pagina_completa_con_exito = False
-                    break
-                
-                if response.status_code != 200:
-                    print(f"[HTTP] [WARN] Estado de respuesta no exitoso: {response.status_code}")
-                    pagina_completa_con_exito = False
-                    continue
-                    
-                soup = BeautifulSoup(response.text, 'html.parser')
-                
-                # Extraer enlaces candidatos de la plataforma específica
-                for a in soup.find_all('a', href=True):
-                    link = a['href']
-                    
-                    # Desempaquetar redirecciones de Google si existen
-                    if '/url?q=' in link:
-                        link = link.split('/url?q=')[1].split('&')[0]
-                    
-                    link = urllib.parse.unquote(link)
-                    
-                    # Descartar links internos de Google o inválidos
-                    if not link.startswith('https://') or 'google.com' in link:
-                        continue
-                    
-                    # Filtrar rigurosamente que pertenezcan a la plataforma activa
-                    if plataforma == "instagram" and "instagram.com" not in link:
-                        continue
-                    if plataforma == "facebook" and "facebook.com" not in link:
-                        continue
-                    
-                    # Extraer título del resultado de búsqueda
-                    h3 = a.find('h3')
-                    titulo = h3.get_text(strip=True) if h3 else ""
-                    
-                    # Obtener fragmento de texto adyacente (snippet) subiendo en el DOM
-                    snippet = ""
-                    parent = a.parent
-                    for _ in range(4):
-                        if not parent:
-                            break
-                        text = parent.get_text(" ", strip=True)
-                        if len(text) > len(titulo) + 30:
-                            snippet = text
-                            break
-                        parent = parent.parent
-                    
-                    if not titulo:
-                        titulo = snippet[:60] + "..." if snippet else f"Publicación de {plataforma.capitalize()}"
-                    
-                    # Control de duplicados en la lista de la tanda actual
-                    if link not in [an['link'] for an in anuncios_candidatos]:
-                        anuncios_candidatos.append({
-                            'titulo': titulo,
-                            'link': link,
-                            'texto': snippet or titulo
-                        })
-                        
-            except Exception as e:
-                print(f"[HTTP] [ERROR] Error al escanear la query: {e}")
-                pagina_completa_con_exito = False
+            for c in candidatos_tanda:
+                if c['link'] not in [a['link'] for a in anuncios_candidatos]:
+                    anuncios_candidatos.append(c)
             
-            # Pausa anti-bloqueo entre consultas de dorks
-            if query_num < total_queries and not bloqueado:
-                espera_humana(4.0, 7.0)
+            # Pausa humana para evitar bloqueos
+            if query_num < total_queries:
+                espera_humana(3.0, 6.0)
                 
-        if bloqueado:
-            print("[WARN] Deteniendo escaneo general por bloqueos de Google.")
-            break
-            
-        if pagina_completa_con_exito:
-            paginas_exitosas += 1
+        paginas_exitosas += 1
 
-    nuevo_indice = indice_inicial + (paginas_exitosas * 10)
-    print(f"\n[SYS] Encontrados {len(anuncios_candidatos)} candidatos brutos para {plataforma.upper()}.")
+    print(f"\n[SYS] Fin del escaneo. Candidatos únicos encontrados: {len(anuncios_candidatos)}")
 
-    nuevos_registros_guardados = 0
-
-    # 5. Procesamiento de resultados y Control de Duplicados en Supabase
-    for anuncio in anuncios_candidatos:
+    # 5. Procesamiento y Clasificación Local
+    nuevos_registros = 0
+    for idx, anuncio in enumerate(anuncios_candidatos):
         link_url = anuncio['link']
         
-        # Generar hash y verificar contra Supabase para descartar duplicados antes de insertar o llamar a IA
+        # Verificar duplicado
         if db_client.existe_captacion_por_link(link_url):
-            print(f"[DUPLICADO] Omitiendo '{link_url}' (ya registrado en Supabase).")
+            print(f"[DUPLICADO] Omitiendo '{link_url}' (ya en Supabase).")
             continue
             
-        print(f"\n[NUEVO] Procesando publicación potencial: {link_url}")
+        print(f"\n[CANDIDATO {idx+1}] Evaluando: {link_url}")
         
-        # Armar el prompt optimizado para clasificación con Gemini
-        prompt = f"""
-        Analiza este posteo de redes sociales para determinar si cumple rigurosamente con los siguientes requisitos:
-        1. Es una VENTA (no alquiler, no alquiler temporal).
-        2. Es de DUEÑO DIRECTO o VENTA SIN COMISIÓN (si dice que es de una inmobiliaria, broker o gestor de bienes raíces, descártalo).
-        3. Es en la ciudad de Mar del Plata, Argentina (especialmente en áreas: Centro, Macrocentro, Parque Luro, Chauvín, Playa Grande, Stella Maris, San José, Paso, Pompeya o Constitución).
-
-        Si cumple con TODO lo anterior, devuelve estrictamente un JSON válido con este formato:
-        {{
-          "Cumple": true,
-          "Tipo Propiedad": "(Casa, Departamento, Duplex, Terreno, etc.)",
-          "Teléfono": "(Número de teléfono si se menciona en el texto, o 'A revisar')",
-          "Dueño/Contacto": "(Nombre del dueño/contacto si se menciona, o 'Dueño Directo')",
-          "Análisis IA": "(Un análisis muy breve explicando por qué es venta directa y sus detalles principales)"
-        }}
-
-        Si no cumple con alguno de los requisitos, devuelve estrictamente este JSON:
-        {{
-          "Cumple": false
-        }}
-
-        Datos a analizar:
-        TÍTULO: {anuncio['titulo']}
-        DESCRIPCIÓN: {anuncio['texto']}
-        LINK: {anuncio['link']}
-        """
+        # Clasificador Heurístico Cero Costo
+        resultado = clasificar_publicacion_local(anuncio['titulo'], anuncio['texto'], link_url)
         
-        reporte = consultar_gemini_con_reintentos(client, prompt)
-        if reporte == "[ERROR]":
-            continue
+        if resultado.get("Cumple") is True:
+            # Guardar en base de datos
+            db_client.guardar_captacion(
+                titulo=anuncio['titulo'],
+                link=link_url,
+                telefono=resultado.get("Teléfono", "A revisar"),
+                plataforma=plataforma,
+                analisis_ia=resultado.get("Análisis IA", "Captación local")
+            )
             
-        # Extraer y parsear JSON retornado por la IA
-        try:
-            start = reporte.find('{')
-            end = reporte.rfind('}')
-            if start != -1 and end != -1:
-                datos_json = json.loads(reporte[start:end+1])
-                
-                # Si cumple con los filtros, se registra y se notifica
-                if datos_json.get("Cumple") is True:
-                    db_client.guardar_captacion(
-                        titulo=anuncio['titulo'],
-                        link=link_url,
-                        telefono=datos_json.get("Teléfono", "A revisar"),
-                        plataforma=plataforma,
-                        analisis_ia=datos_json.get("Análisis IA", "Venta Directa de Dueño")
-                    )
-                    
-                    # Adjuntar plataforma y notificar a Telegram
-                    datos_json["Link"] = link_url
-                    datos_json["Plataforma"] = plataforma
-                    enviar_a_telegram(datos_json)
-                    nuevos_registros_guardados += 1
-                else:
-                    # Si no cumple, igualmente lo guardamos como descartado para registrar el hash
-                    # y no volver a gastar tokens de Gemini analizando el mismo link la próxima vez.
-                    db_client.guardar_captacion(
-                        titulo=anuncio['titulo'],
-                        link=link_url,
-                        telefono="Descartado",
-                        plataforma=plataforma,
-                        analisis_ia="DESCARTADO: No cumple criterios de venta directa por dueño o zona."
-                    )
-                    print(f"[IA] Publicación descartada (no cumple filtros). Registrado hash en BD para evitar re-análisis.")
-                    
-            else:
-                print(f"[IA] [WARN] No se localizó estructura JSON válida en el reporte.")
-        except Exception as e:
-            print(f"[IA] [ERROR] Error al parsear JSON o registrar en BD: {e}")
+            # Enviar alerta por Telegram
+            resultado["Link"] = link_url
+            resultado["Plataforma"] = plataforma
+            enviar_a_telegram(resultado)
+            nuevos_registros += 1
+        else:
+            # Guardar como descartado para registrar el hash y no volver a procesar
+            db_client.guardar_captacion(
+                titulo=anuncio['titulo'],
+                link=link_url,
+                telefono="Descartado",
+                plataforma=plataforma,
+                analisis_ia="Descartado localmente (no cumple filtros)."
+            )
+            print(f"[IA] Publicación descartada. Hash registrado.")
             
-        espera_humana(2.0, 4.0)
+        espera_humana(1.0, 3.0)
 
-    # 6. Actualización del puntero de paginación en Supabase
-    if paginas_exitosas > 0:
-        db_client.actualizar_indice(plataforma, nuevo_indice)
-        print(f"\n=====================================================")
-        print(f"✅ CICLO ACUTADO FINALIZADO exitosamente.")
-        print(f"📊 Nuevas captaciones agregadas: {nuevos_registros_guardados}")
-        print(f"🔑 Paginación actualizada en Supabase para {plataforma.upper()}: {nuevo_indice}")
-        print("=====================================================")
-    else:
-        print(f"\n=====================================================")
-        print(f"⚠️ CICLO COMPLETADO SIN AVANCES EN EL ÍNDICE.")
-        print(f"📊 Nuevas captaciones agregadas: {nuevos_registros_guardados}")
-        print(f"🔑 El índice se mantiene en: {indice_inicial}")
-        print("=====================================================")
+    # 6. Actualización del puntero de paginación
+    nuevo_indice = indice_inicial + (paginas_exitosas * 10)
+    db_client.actualizar_indice(plataforma, nuevo_indice)
+    
+    print(f"\n=====================================================")
+    print(f"✅ CICLO SCRAPER FINALIZADO.")
+    print(f"📊 Nuevas captaciones registradas: {nuevos_registros}")
+    print(f"🔑 Paginación actualizada a: {nuevo_indice}")
+    print("=====================================================")
 
 if __name__ == "__main__":
     main()

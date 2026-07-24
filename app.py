@@ -16,6 +16,29 @@ except Exception:
 
 import db_client
 
+@st.cache_data(ttl=60)
+def check_supabase():
+    return db_client.validar_conexion_supabase()
+
+@st.cache_data(ttl=60)
+def check_telegram():
+    from notificador_telegram import validar_conexion_telegram
+    return validar_conexion_telegram()
+
+@st.cache_data(ttl=60)
+def check_gemini():
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not gemini_key:
+        return False
+    try:
+        from google import genai
+        client = genai.Client(api_key=gemini_key)
+        client.models.list()
+        return True
+    except Exception:
+        return False
+
+
 # 1. Configuración de la página
 st.set_page_config(
     page_title="IA INMOBILIARIA - TERMINAL DE OPERACIONES",
@@ -143,13 +166,30 @@ if "thread" not in st.session_state:
     st.session_state.thread = None
 
 # Verificación de credenciales Supabase
-supabase_url = os.environ.get("SUPABASE_URL", "")
-supabase_key = os.environ.get("SUPABASE_KEY", "")
-db_disponible = bool(supabase_url and supabase_key)
+db_disponible = check_supabase()
 
 # 3. Barra lateral
 st.sidebar.title("🤖 IA Inmobiliaria")
 st.sidebar.caption("Terminal de control")
+st.sidebar.divider()
+
+# Panel de Conexiones
+st.sidebar.subheader("🔌 Estado de Conexiones")
+if db_disponible:
+    st.sidebar.markdown("<span style='color:#00ff66;'>🟢 Supabase: CONECTADO</span>", unsafe_allow_html=True)
+else:
+    st.sidebar.markdown("<span style='color:#ff3333;'>🔴 Supabase: DESCONECTADO</span>", unsafe_allow_html=True)
+
+if check_telegram():
+    st.sidebar.markdown("<span style='color:#00ff66;'>🟢 Telegram: BOT ACTIVO</span>", unsafe_allow_html=True)
+else:
+    st.sidebar.markdown("<span style='color:#ff3333;'>🔴 Telegram: ERROR/401</span>", unsafe_allow_html=True)
+
+if check_gemini():
+    st.sidebar.markdown("<span style='color:#00ff66;'>🟢 Gemini API: CONECTADO</span>", unsafe_allow_html=True)
+else:
+    st.sidebar.markdown("<span style='color:#ffcc00;'>🟡 Gemini API: SIN CREDENCIALES</span>", unsafe_allow_html=True)
+
 st.sidebar.divider()
 
 # Selector de plataforma nativo

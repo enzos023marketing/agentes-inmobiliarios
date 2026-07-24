@@ -11,8 +11,8 @@ except Exception:
     pass
 
 # Configuración de variables de entorno para Supabase
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
 
 
 def obtener_supabase_client() -> Client:
@@ -23,6 +23,17 @@ def obtener_supabase_client() -> Client:
             "Por favor, configúralas para conectar con la base de datos cloud."
         )
     return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+def validar_conexion_supabase() -> bool:
+    """Valida la conexión a Supabase intentando realizar una consulta simple."""
+    try:
+        supabase = obtener_supabase_client()
+        # Intentamos obtener un registro de prueba de estado_scraper
+        supabase.table("estado_scraper").select("plataforma").limit(1).execute()
+        return True
+    except Exception as e:
+        print(f"[DB] Error de validación de conexión: {e}")
+        return False
 
 def obtener_ultimo_indice(plataforma: str) -> int:
     """Obtiene el último índice de paginación de la plataforma especificada."""

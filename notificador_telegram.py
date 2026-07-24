@@ -9,9 +9,20 @@ try:
     load_dotenv()
 except Exception:
     pass
-TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 # ---------------------------------
+
+def validar_conexion_telegram() -> bool:
+    """Verifica si el token de Telegram es válido consultando a la API."""
+    if not TOKEN:
+        return False
+    url = f"https://api.telegram.org/bot{TOKEN}/getMe"
+    try:
+        respuesta = requests.get(url, timeout=10)
+        return respuesta.status_code == 200
+    except Exception:
+        return False
 
 def enviar_mensaje_telegram(mensaje):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -33,6 +44,10 @@ def main():
     print("🤖 INICIANDO ENLACE TELEGRAM (SEGUNDO PLANO) 🤖")
     print("=====================================================\n")
     
+    if not validar_conexion_telegram():
+        print("[ERROR] El token de Telegram no es válido o no está configurado. Verifica tu .env")
+        return
+        
     archivo_excel = "contactos_captacion.xlsx"
     
     if not os.path.exists(archivo_excel):
