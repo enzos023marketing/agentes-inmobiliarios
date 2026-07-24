@@ -26,6 +26,103 @@ st.set_page_config(
 
 # La interfaz utiliza el diseño nativo estable de Streamlit.
 
+# Custom Hacker CSS injection
+st.markdown("""
+<style>
+    /* Estilos globales */
+    html, body, [data-testid="stAppViewContainer"], [data-testid="stSidebar"], [data-testid="stHeader"] {
+        background-color: #05070a !important;
+        color: #00ff66 !important;
+        font-family: 'Courier New', Courier, monospace !important;
+    }
+    
+    /* Forzar textos a Courier New y Verde Neón */
+    h1, h2, h3, h4, h5, h6, span, label, p, div, small {
+        font-family: 'Courier New', Courier, monospace !important;
+        color: #00ff66 !important;
+    }
+    
+    /* Sidebar styling */
+    section[data-testid="stSidebar"] {
+        background-color: #070a0f !important;
+        border-right: 1px solid #00ff6633 !important;
+    }
+    
+    /* Inputs, select boxes y sliders */
+    input, select, textarea, div[role="button"], div[data-baseweb="select"] {
+        background-color: #0a0e14 !important;
+        color: #00ff66 !important;
+        border: 1px solid #00ff6655 !important;
+        font-family: 'Courier New', Courier, monospace !important;
+    }
+    
+    /* Ajuste de controles sliders */
+    div[data-testid="stSlider"] {
+        color: #00ff66 !important;
+    }
+    
+    /* Botones estilo terminal */
+    button[kind="primary"], button[kind="secondary"], .stButton > button {
+        background-color: #05070a !important;
+        color: #00ff66 !important;
+        border: 1px solid #00ff66 !important;
+        font-family: 'Courier New', Courier, monospace !important;
+        border-radius: 4px !important;
+        transition: all 0.3s ease-in-out !important;
+        font-weight: bold !important;
+        text-transform: uppercase !important;
+    }
+    
+    button[kind="primary"]:hover, button[kind="secondary"]:hover, .stButton > button:hover {
+        background-color: #00ff66 !important;
+        color: #05070a !important;
+        box-shadow: 0 0 15px #00ff66bb !important;
+        border: 1px solid #00ff66 !important;
+    }
+    
+    /* DataFrame y tablas estilo hacker */
+    .stDataFrame, div[data-testid="stTable"] {
+        background-color: #05070a !important;
+        border: 1px solid #00ff6633 !important;
+    }
+    
+    div[data-testid="stDataFrame"] div {
+        font-family: 'Courier New', Courier, monospace !important;
+    }
+
+    /* Modificar colores del dataframe renderizado */
+    .stDataFrame [role="grid"] {
+        background-color: #05070a !important;
+    }
+    
+    .stDataFrame [role="gridcell"], .stDataFrame [role="columnheader"] {
+        background-color: #070a0f !important;
+        color: #00ff66 !important;
+        border: 1px solid #00ff6622 !important;
+    }
+    
+    /* Mensajes de información y advertencia */
+    div[data-testid="stAlert"] {
+        background-color: #0a0e14 !important;
+        color: #00ff66 !important;
+        border: 1px solid #00ff6644 !important;
+    }
+    
+    /* Estilo del área de logs (st.code) */
+    code, pre {
+        background-color: #020305 !important;
+        color: #00ff99 !important;
+        border: 1px solid #00ff6622 !important;
+        font-family: 'Courier New', Courier, monospace !important;
+    }
+    
+    /* Ocultar elementos nativos de Streamlit sobrantes */
+    #MainMenu, footer, header {
+        visibility: hidden;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # 2. Gestión de estado
 if "agente_corriendo" not in st.session_state:
     st.session_state.agente_corriendo = False
@@ -183,54 +280,10 @@ st.sidebar.divider()
 st.sidebar.info("Scraper modular autónomo cloud-ready para búsqueda directa con propietarios de inmuebles.")
 
 # 4. Área Principal (Terminal de Visualización)
-st.title("🖥️ Terminal de Captaciones Inmobiliarias")
-
-# Grilla de Captaciones en Supabase
-st.subheader("Datos de Telemetría Recientes")
-
-if db_disponible:
-    try:
-        datos = db_client.obtener_captaciones_recientes(limit=limite_registros)
-        if datos:
-            df = pd.DataFrame(datos)
-            
-            # Formatear la columna de fecha para estilo consola
-            if "creado_en" in df.columns:
-                df["creado_en"] = pd.to_datetime(df["creado_en"]).dt.strftime("%Y-%m-%d %H:%M")
-            
-            # Asegurar y renombrar columnas deseadas para la consola
-            df_display = df.rename(columns={
-                "creado_en": "FECHA",
-                "plataforma": "RED",
-                "titulo": "PROPIEDAD_TITULO",
-                "link": "URL",
-                "telefono": "TELEFONO",
-                "analisis_ia": "ANALISIS_IA"
-            })
-            
-            columnas_show = ["FECHA", "RED", "PROPIEDAD_TITULO", "URL", "TELEFONO", "ANALISIS_IA"]
-            df_display = df_display[[c for c in columnas_show if c in df_display.columns]]
-            
-            st.dataframe(
-                df_display,
-                column_config={
-                    "URL": st.column_config.LinkColumn(
-                        "URL",
-                        help="Abrir la publicación orginal en una pestaña nueva",
-                        display_text="LINK_OPEN 🔗"
-                    )
-                },
-                use_container_width=True
-            )
-        else:
-            st.info("[SYS_INFO]: No se encontraron registros en Supabase. Corre el agente para poblar la base de datos cloud.")
-    except Exception as e:
-        st.error(f"[SYS_ERROR]: Falló la sincronización con la base de datos cloud: {e}")
-else:
-    st.warning("[SYS_WARN]: Supabase no está configurado. Revisa tu archivo .env.")
+st.title("🖥️ IA INMOBILIARIA - TERMINAL DE OPERACIONES")
 
 # 5. Consola de Registro de Operaciones (Logs)
-st.subheader("Logs de Operación del Sistema")
+st.subheader("📟 Consola de Diagnóstico de Terminal")
 
 if st.session_state.agente_corriendo:
     # 1. Leer todas las líneas de la cola
@@ -260,17 +313,19 @@ if st.session_state.agente_corriendo:
                 else:
                     st.session_state.logs.append(linea_clean)
                     
-        # 3. Mostrar UI de progreso
-        col_pct, col_desc = st.columns([1, 4])
+        # 3. Mostrar UI de progreso con spinner de caracteres ASCII
+        col_pct, col_spinner, col_desc = st.columns([1, 1.2, 3.8])
         with col_pct:
-            st.metric("Progreso", f"{st.session_state.progreso_pct}%")
+            st.metric("PROGRESO", f"{st.session_state.progreso_pct}%")
+        with col_spinner:
+            spinner_frames = ["[ ⠋ ]", "[ ⠙ ]", "[ ⠹ ]", "[ ⠸ ]", "[ ⠼ ]", "[ ⠴ ]", "[ ⠦ ]", "[ ⠧ ]", "[ ⠇ ]", "[ ⠏ ]"]
+            frame_idx = int(time.time() * 2) % len(spinner_frames)
+            spinner_char = spinner_frames[frame_idx]
+            st.metric("ESTADO", f"RUNNING {spinner_char}")
         with col_desc:
             st.progress(st.session_state.progreso_pct / 100.0)
             
         st.success(f"[SYS_ACTIVE]: Agente ejecutando búsqueda acotada de {plataforma.upper()} desde índice {indice_personalizado} ({paginas_escanear} pág/s).")
-        
-        # Mostrar logs en la consola
-        st.code("\n".join(st.session_state.logs[-25:]), language="text")
         
         # 4. Verificar si terminó
         retorno = proceso.poll()
@@ -317,5 +372,55 @@ if st.session_state.agente_corriendo:
             st.rerun()
         except AttributeError:
             st.experimental_rerun()
+
+# Renderizado persistente de los logs acumulados en pantalla
+if st.session_state.logs:
+    st.code("\n".join(st.session_state.logs[-40:]), language="text")
 else:
     st.info("[SYS_CONSOLE]: Esperando señal. Inicia la secuencia RUN INDEX desde el panel de control.")
+
+st.divider()
+
+# 6. Resultados y Capturas Encontradas (Al pie de la página, persistente)
+st.subheader("📋 Resultados y Capturas Encontradas")
+
+if db_disponible:
+    try:
+        datos = db_client.obtener_captaciones_recientes(limit=limite_registros)
+        if datos:
+            df = pd.DataFrame(datos)
+            
+            # Formatear la columna de fecha para estilo consola
+            if "creado_en" in df.columns:
+                df["creado_en"] = pd.to_datetime(df["creado_en"]).dt.strftime("%Y-%m-%d %H:%M")
+            
+            # Asegurar y renombrar columnas deseadas para la consola
+            df_display = df.rename(columns={
+                "creado_en": "FECHA",
+                "plataforma": "RED",
+                "titulo": "PROPIEDAD_TITULO",
+                "link": "URL",
+                "telefono": "TELEFONO",
+                "analisis_ia": "ANALISIS_IA"
+            })
+            
+            columnas_show = ["FECHA", "RED", "PROPIEDAD_TITULO", "URL", "TELEFONO", "ANALISIS_IA"]
+            df_display = df_display[[c for c in columnas_show if c in df_display.columns]]
+            
+            st.dataframe(
+                df_display,
+                column_config={
+                    "URL": st.column_config.LinkColumn(
+                        "URL",
+                        help="Abrir la publicación original en una pestaña nueva",
+                        display_text="LINK_OPEN 🔗"
+                    )
+                },
+                use_container_width=True
+            )
+        else:
+            st.info("[SYS_INFO]: No se encontraron registros en Supabase. Corre el agente para poblar la base de datos cloud.")
+    except Exception as e:
+        st.error(f"[SYS_ERROR]: Falló la sincronización con la base de datos cloud: {e}")
+else:
+    st.warning("[SYS_WARN]: Supabase no está configurado. Revisa tu archivo .env.")
