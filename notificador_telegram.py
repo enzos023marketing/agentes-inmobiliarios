@@ -9,8 +9,20 @@ try:
     load_dotenv()
 except Exception:
     pass
-TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+def obtener_secreto(key: str, default: str = "") -> str:
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and key in st.secrets:
+            return str(st.secrets[key]).strip()
+    except Exception:
+        pass
+    val = os.getenv(key)
+    if val is not None:
+        return val.strip()
+    return default
+
+TOKEN = obtener_secreto("TELEGRAM_BOT_TOKEN")
+CHAT_ID = obtener_secreto("TELEGRAM_CHAT_ID")
 # ---------------------------------
 
 def validar_conexion_telegram() -> bool:

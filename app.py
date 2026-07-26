@@ -27,7 +27,17 @@ def check_telegram():
 
 @st.cache_data(ttl=60)
 def check_gemini():
-    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    gemini_key = ""
+    try:
+        if "GEMINI_API_KEY" in st.secrets:
+            gemini_key = str(st.secrets["GEMINI_API_KEY"]).strip()
+    except Exception:
+        pass
+    if not gemini_key:
+        val = os.getenv("GEMINI_API_KEY")
+        if val is not None:
+            gemini_key = val.strip()
+            
     if not gemini_key:
         return False
     try:

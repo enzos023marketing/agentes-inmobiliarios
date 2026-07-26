@@ -11,8 +11,20 @@ except Exception:
     pass
 
 # Configuración de variables de entorno para Supabase
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
+def obtener_secreto(key: str, default: str = "") -> str:
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and key in st.secrets:
+            return str(st.secrets[key]).strip()
+    except Exception:
+        pass
+    val = os.getenv(key)
+    if val is not None:
+        return val.strip()
+    return default
+
+SUPABASE_URL = obtener_secreto("SUPABASE_URL")
+SUPABASE_KEY = obtener_secreto("SUPABASE_KEY")
 
 
 def obtener_supabase_client() -> Client:

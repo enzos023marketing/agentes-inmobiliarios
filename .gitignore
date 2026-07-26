@@ -6,6 +6,9 @@ env/
 
 # Credenciales y configuración sensible
 .env
+.env.local
+.env.*.local
+.streamlit/secrets.toml
 
 # Caché de ejecución de Python
 __pycache__/
