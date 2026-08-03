@@ -27,17 +27,7 @@ def check_telegram():
 
 @st.cache_data(ttl=60)
 def check_gemini():
-    gemini_key = ""
-    try:
-        if "GEMINI_API_KEY" in st.secrets:
-            gemini_key = str(st.secrets["GEMINI_API_KEY"]).strip()
-    except Exception:
-        pass
-    if not gemini_key:
-        val = os.getenv("GEMINI_API_KEY")
-        if val is not None:
-            gemini_key = val.strip()
-            
+    gemini_key = db_client.obtener_secreto("GEMINI_API_KEY")
     if not gemini_key:
         return False
     try:
@@ -258,13 +248,21 @@ with col_iniciar:
             dir_actual = os.path.dirname(os.path.abspath(__file__))
             ruta_orquestador = os.path.join(dir_actual, "agente_orquestador.py")
             
+            # Preparar entorno para el subproceso inyectando st.secrets
+            env_subproceso = dict(os.environ)
+            for sec_key in ["SUPABASE_URL", "SUPABASE_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GEMINI_API_KEY"]:
+                sec_val = db_client.obtener_secreto(sec_key)
+                if sec_val:
+                    env_subproceso[sec_key] = sec_val
+
             # Ejecutamos agente_orquestador.py pasándole la plataforma, el índice inicial y las páginas
             proceso = subprocess.Popen(
                 [sys.executable, ruta_orquestador, plataforma.lower(), str(indice_personalizado), str(paginas_escanear)],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                bufsize=1
+                bufsize=1,
+                env=env_subproceso
             )
             
             st.session_state.proceso = proceso

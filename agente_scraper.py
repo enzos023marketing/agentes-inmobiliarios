@@ -247,11 +247,11 @@ def realizar_busqueda(query, plataforma, start_val=0):
 
 def enviar_a_telegram(prop):
     """Envía alertas del inmueble captado por Telegram."""
-    TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-    CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    TOKEN = db_client.obtener_secreto("TELEGRAM_BOT_TOKEN")
+    CHAT_ID = db_client.obtener_secreto("TELEGRAM_CHAT_ID")
     
     if not TOKEN or not CHAT_ID:
-        print("[TELEGRAM] Omitiendo notificación: Credenciales ausentes en el .env.")
+        print("[TELEGRAM] Omitiendo notificación: Credenciales ausentes en st.secrets o .env.")
         return
         
     url_telegram = f"https://api.telegram.org/bot{TOKEN}/sendMessage"

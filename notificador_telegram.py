@@ -9,43 +9,41 @@ try:
     load_dotenv()
 except Exception:
     pass
-def obtener_secreto(key: str, default: str = "") -> str:
-    try:
-        import streamlit as st
-        if hasattr(st, "secrets") and key in st.secrets:
-            return str(st.secrets[key]).strip()
-    except Exception:
-        pass
-    val = os.getenv(key)
-    if val is not None:
-        return val.strip()
-    return default
+from db_client import obtener_secreto
 
-TOKEN = obtener_secreto("TELEGRAM_BOT_TOKEN")
-CHAT_ID = obtener_secreto("TELEGRAM_CHAT_ID")
-# ---------------------------------
+def obtener_telegram_credentials() -> tuple:
+    """Obtiene dinámicamente el TOKEN y CHAT_ID desde st.secrets o .env."""
+    token = obtener_secreto("TELEGRAM_BOT_TOKEN")
+    chat_id = obtener_secreto("TELEGRAM_CHAT_ID")
+    return token, chat_id
 
 def validar_conexion_telegram() -> bool:
     """Verifica si el token de Telegram es válido consultando a la API."""
-    if not TOKEN:
+    token, _ = obtener_telegram_credentials()
+    if not token:
         return False
-    url = f"https://api.telegram.org/bot{TOKEN}/getMe"
+    url = f"https://api.telegram.org/bot{token}/getMe"
     try:
         respuesta = requests.get(url, timeout=10)
         return respuesta.status_code == 200
-    except Exception:
+    except Exception as e:
+        print(f"[TELEGRAM] Error de validación: {e}")
         return False
 
 def enviar_mensaje_telegram(mensaje):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    token, chat_id = obtener_telegram_credentials()
+    if not token or not chat_id:
+        print("[TELEGRAM] Omitiendo envío: Credenciales ausentes.")
+        return False
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
-        "chat_id": CHAT_ID,
+        "chat_id": chat_id,
         "text": mensaje,
         "parse_mode": "Markdown",
         "disable_web_page_preview": True
     }
     try:
-        respuesta = requests.post(url, json=payload)
+        respuesta = requests.post(url, json=payload, timeout=10)
         return respuesta.status_code == 200
     except Exception as e:
         print(f"[ERROR] Falla de conexión con Telegram: {e}")

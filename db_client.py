@@ -12,21 +12,60 @@ except Exception:
 
 import urllib.parse
 
-# Configuración de variables de entorno para Supabase
 def obtener_secreto(key: str, default: str = "") -> str:
+    """
+    Obtiene un secreto de forma ultra-robusta buscando en:
+    1. st.secrets (raíz de st.secrets, insensible a mayúsculas/minúsculas o en subsecciones TOML)
+    2. os.environ / os.getenv (variables de entorno locales o del sistema)
+    """
+    if not key:
+        return default
+
+    key_upper = key.upper().strip()
+    key_lower = key.lower().strip()
+
+    # 1. Buscar en streamlit.secrets
     try:
         import streamlit as st
-        if hasattr(st, "secrets") and key in st.secrets:
-            return str(st.secrets[key]).strip()
+        if hasattr(st, "secrets") and st.secrets is not None:
+            # 1a. Acceso directo por clave
+            for k in [key, key_upper, key_lower]:
+                try:
+                    if k in st.secrets:
+                        val = str(st.secrets[k]).strip().strip("'\"")
+                        if val:
+                            return val
+                except Exception:
+                    pass
+
+            # 1b. Búsqueda en subsecciones TOML (ej: [supabase], [telegram], etc.)
+            try:
+                for sec_key in st.secrets:
+                    try:
+                        sec_val = st.secrets[sec_key]
+                        if hasattr(sec_val, "__getitem__"):
+                            for k in [key, key_upper, key_lower]:
+                                try:
+                                    if k in sec_val:
+                                        val = str(sec_val[k]).strip().strip("'\"")
+                                        if val:
+                                            return val
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+            except Exception:
+                pass
     except Exception:
         pass
-    val = os.getenv(key)
-    if val is not None:
-        return val.strip()
-    return default
 
-SUPABASE_URL = obtener_secreto("SUPABASE_URL")
-SUPABASE_KEY = obtener_secreto("SUPABASE_KEY")
+    # 2. Buscar en os.environ / os.getenv
+    for k in [key, key_upper, key_lower]:
+        val = os.getenv(k)
+        if val is not None and str(val).strip():
+            return str(val).strip().strip("'\"")
+
+    return default
 
 def normalizar_url(url: str) -> str:
     """
@@ -61,13 +100,15 @@ def generar_hash_url(link: str) -> str:
     return hashlib.md5(url_norm.encode('utf-8')).hexdigest()
 
 def obtener_supabase_client() -> Client:
-    """Inicializa y retorna el cliente de Supabase."""
-    if not SUPABASE_URL or not SUPABASE_KEY:
+    """Inicializa y retorna el cliente de Supabase evaluando dinámicamente las credenciales."""
+    url = obtener_secreto("SUPABASE_URL")
+    key = obtener_secreto("SUPABASE_KEY")
+    if not url or not key:
         raise ValueError(
             "Faltan las variables de entorno SUPABASE_URL o SUPABASE_KEY. "
-            "Por favor, configúralas para conectar con la base de datos cloud."
+            "Por favor, configúralas en st.secrets o en tu archivo .env."
         )
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+    return create_client(url, key)
 
 def validar_conexion_supabase() -> bool:
     """Valida la conexión a Supabase intentando realizar una consulta simple."""
