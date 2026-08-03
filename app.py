@@ -250,17 +250,17 @@ with col_iniciar:
     if st.button("RUN INDEX", use_container_width=True, disabled=boton_deshabilitado):
         st.sidebar.info("⚡ INICIALIZANDO...")
         st.session_state.agente_corriendo = True
-        st.session_state.logs = ["[SYS]: Iniciando agente scraper..."]
+        st.session_state.logs = ["[SYS]: Iniciando Agente Central Orquestador (Fase 1)..."]
         st.session_state.progreso_pct = 0
         
         try:
             # Calcular ruta absoluta de forma robusta
             dir_actual = os.path.dirname(os.path.abspath(__file__))
-            ruta_scraper = os.path.join(dir_actual, "agente_scraper.py")
+            ruta_orquestador = os.path.join(dir_actual, "agente_orquestador.py")
             
-            # Ejecutamos agente_scraper.py pasándole la plataforma, el índice inicial y las páginas
+            # Ejecutamos agente_orquestador.py pasándole la plataforma, el índice inicial y las páginas
             proceso = subprocess.Popen(
-                [sys.executable, ruta_scraper, plataforma.lower(), str(indice_personalizado), str(paginas_escanear)],
+                [sys.executable, ruta_orquestador, plataforma.lower(), str(indice_personalizado), str(paginas_escanear)],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
