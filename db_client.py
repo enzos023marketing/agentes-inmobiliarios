@@ -111,12 +111,15 @@ def obtener_supabase_client() -> Client:
     return create_client(url, key)
 
 def validar_conexion_supabase() -> bool:
-    """Valida la conexión a Supabase intentando realizar una consulta simple."""
+    """Valida la conexión a Supabase intentando realizar una consulta simple a captaciones o estado_scraper."""
     try:
         supabase = obtener_supabase_client()
-        # Intentamos obtener un registro de prueba de estado_scraper
-        supabase.table("estado_scraper").select("plataforma").limit(1).execute()
-        return True
+        try:
+            supabase.table("captaciones").select("id").limit(1).execute()
+            return True
+        except Exception:
+            supabase.table("estado_scraper").select("*").limit(1).execute()
+            return True
     except Exception as e:
         print(f"[DB] Error de validación de conexión: {e}")
         return False
