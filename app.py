@@ -246,7 +246,7 @@ st.sidebar.divider()
 col_iniciar, col_detener = st.sidebar.columns(2)
 
 with col_iniciar:
-    boton_deshabilitado = st.session_state.agente_corriendo or not db_disponible
+    boton_deshabilitado = st.session_state.agente_corriendo
     if st.button("RUN INDEX", use_container_width=True, disabled=boton_deshabilitado):
         st.sidebar.info("⚡ INICIALIZANDO...")
         st.session_state.agente_corriendo = True
