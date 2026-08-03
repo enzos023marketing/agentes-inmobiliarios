@@ -15,8 +15,9 @@ import urllib.parse
 def obtener_secreto(key: str, default: str = "") -> str:
     """
     Obtiene un secreto de forma ultra-robusta buscando en:
-    1. st.secrets (raíz de st.secrets, insensible a mayúsculas/minúsculas o en subsecciones TOML)
-    2. os.environ / os.getenv (variables de entorno locales o del sistema)
+    1. st.session_state (claves personalizadas editadas desde la UI)
+    2. st.secrets (raíz de st.secrets, insensible a mayúsculas/minúsculas o en subsecciones TOML)
+    3. os.environ / os.getenv (variables de entorno locales o del sistema)
     """
     if not key:
         return default
@@ -24,11 +25,26 @@ def obtener_secreto(key: str, default: str = "") -> str:
     key_upper = key.upper().strip()
     key_lower = key.lower().strip()
 
-    # 1. Buscar en streamlit.secrets
+    # 1. Buscar en st.session_state
+    try:
+        import streamlit as st
+        if hasattr(st, "session_state"):
+            for k in [f"CUSTOM_{key_upper}", key, key_upper, key_lower]:
+                try:
+                    if k in st.session_state and st.session_state[k]:
+                        val = str(st.session_state[k]).strip().strip("'\"")
+                        if val:
+                            return val
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # 2. Buscar en st.secrets
     try:
         import streamlit as st
         if hasattr(st, "secrets") and st.secrets is not None:
-            # 1a. Acceso directo por clave
+            # 2a. Acceso directo por clave
             for k in [key, key_upper, key_lower]:
                 try:
                     if k in st.secrets:
@@ -38,7 +54,7 @@ def obtener_secreto(key: str, default: str = "") -> str:
                 except Exception:
                     pass
 
-            # 1b. Búsqueda en subsecciones TOML (ej: [supabase], [telegram], etc.)
+            # 2b. Búsqueda en subsecciones TOML (ej: [supabase], [telegram], etc.)
             try:
                 for sec_key in st.secrets:
                     try:
@@ -59,7 +75,7 @@ def obtener_secreto(key: str, default: str = "") -> str:
     except Exception:
         pass
 
-    # 2. Buscar en os.environ / os.getenv
+    # 3. Buscar en os.environ / os.getenv
     for k in [key, key_upper, key_lower]:
         val = os.getenv(k)
         if val is not None and str(val).strip():

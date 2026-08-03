@@ -16,16 +16,13 @@ except Exception:
 
 import db_client
 
-@st.cache_data(ttl=60)
 def check_supabase():
     return db_client.validar_conexion_supabase()
 
-@st.cache_data(ttl=60)
 def check_telegram():
     from notificador_telegram import validar_conexion_telegram
     return validar_conexion_telegram()
 
-@st.cache_data(ttl=60)
 def check_gemini():
     gemini_key = db_client.obtener_secreto("GEMINI_API_KEY")
     if not gemini_key:
@@ -165,6 +162,14 @@ if "stdout_queue" not in st.session_state:
 if "thread" not in st.session_state:
     st.session_state.thread = None
 
+# Verificación de auto-desbloqueo del estado del proceso
+if st.session_state.proceso is not None:
+    if st.session_state.proceso.poll() is not None:
+        st.session_state.agente_corriendo = False
+        st.session_state.proceso = None
+else:
+    st.session_state.agente_corriendo = False
+
 # Verificación de credenciales Supabase
 db_disponible = check_supabase()
 
@@ -190,6 +195,40 @@ if check_gemini():
 else:
     st.sidebar.markdown("<span style='color:#ffcc00;'>🟡 Gemini API: SIN CREDENCIALES</span>", unsafe_allow_html=True)
 
+# Expander de Configuración Manual de Credenciales
+with st.sidebar.expander("🔑 Configuración de Keys y Secrets", expanded=not db_disponible):
+    st.caption("Verifica o edita tus credenciales en vivo si estás en la nube:")
+    sub_url_val = db_client.obtener_secreto("SUPABASE_URL")
+    sub_key_val = db_client.obtener_secreto("SUPABASE_KEY")
+    tg_token_val = db_client.obtener_secreto("TELEGRAM_BOT_TOKEN")
+    tg_chat_val = db_client.obtener_secreto("TELEGRAM_CHAT_ID")
+
+    inp_sub_url = st.text_input("SUPABASE_URL", value=sub_url_val, type="default", key="inp_sub_url")
+    inp_sub_key = st.text_input("SUPABASE_KEY", value=sub_key_val, type="password", key="inp_sub_key")
+    inp_tg_token = st.text_input("TELEGRAM_BOT_TOKEN", value=tg_token_val, type="password", key="inp_tg_token")
+    inp_tg_chat = st.text_input("TELEGRAM_CHAT_ID", value=tg_chat_val, type="default", key="inp_tg_chat")
+
+    if st.button("Guardar y Reconectar", use_container_width=True):
+        if inp_sub_url.strip():
+            st.session_state["CUSTOM_SUPABASE_URL"] = inp_sub_url.strip()
+            os.environ["SUPABASE_URL"] = inp_sub_url.strip()
+        if inp_sub_key.strip():
+            st.session_state["CUSTOM_SUPABASE_KEY"] = inp_sub_key.strip()
+            os.environ["SUPABASE_KEY"] = inp_sub_key.strip()
+        if inp_tg_token.strip():
+            st.session_state["CUSTOM_TELEGRAM_BOT_TOKEN"] = inp_tg_token.strip()
+            os.environ["TELEGRAM_BOT_TOKEN"] = inp_tg_token.strip()
+        if inp_tg_chat.strip():
+            st.session_state["CUSTOM_TELEGRAM_CHAT_ID"] = inp_tg_chat.strip()
+            os.environ["TELEGRAM_CHAT_ID"] = inp_tg_chat.strip()
+        
+        st.success("Credenciales actualizadas.")
+        time.sleep(0.5)
+        try:
+            st.rerun()
+        except Exception:
+            st.experimental_rerun()
+
 st.sidebar.divider()
 
 # Selector de plataforma nativo
@@ -208,7 +247,7 @@ if db_disponible:
     except Exception as e:
         st.sidebar.error(f"Error cargando puntero: {e}")
 else:
-    st.sidebar.error("Base de datos de Supabase offline. Configura las credenciales en .env")
+    st.sidebar.info("Modo evaluación local o Supabase offline.")
 
 st.sidebar.divider()
 
@@ -236,7 +275,7 @@ st.sidebar.divider()
 col_iniciar, col_detener = st.sidebar.columns(2)
 
 with col_iniciar:
-    boton_deshabilitado = st.session_state.agente_corriendo
+    boton_deshabilitado = st.session_state.agente_corriendo and (st.session_state.proceso is not None and st.session_state.proceso.poll() is None)
     if st.button("RUN INDEX", use_container_width=True, disabled=boton_deshabilitado):
         st.sidebar.info("⚡ INICIALIZANDO...")
         st.session_state.agente_corriendo = True
